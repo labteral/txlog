@@ -11,7 +11,8 @@ class Record:
     def __init__(self, value, index=None):
         self.value = value
         self.index = index
-        self.timestamp = utils.get_timestamp_ms()
+        self.creation_timestamp = utils.get_timestamp_ms()
+        self.commitment_timestamp = None
         self.committed = False
 
 
@@ -22,34 +23,55 @@ class TxLog:
         self._write_batch = None
         self._min_age = min_age
 
-    def begin_db_tx(self):
+    def begin_write_batch(self):
         self._write_batch = rocksdb.WriteBatch()
 
-    def commit_db_tx(self):
-        self._db.write(self._write_batch)
+    def commit_write_batch(self):
+        self._db.write(self._write_batch, sync=True)
         self._write_batch = None
 
-    def commit_tx(self, index):
-        assert (self._get_committed_offset() == index - 1)
+    def commit(self, index):
         record = self._get(index, prefix='txlog_')
-        if record != None:
-            record.committed = True
+        if record == None:
+            raise IndexError
+        assert (self._get_committed_offset() == index - 1)
+        record.committed = True
+        record.commitment_timestamp = utils.get_timestamp_ms()
+        self.begin_write_batch()
         self._put(index, record)
+        self._increment_committed_offset()
+        self.commit_write_batch()
 
     def get(self, index):
         return self._get(index, prefix='txlog_')
 
     def get_latest_uncommitted_tx(self):
-        return self._get(self._get_committed_offset(), prefix='txlog_')
+        if self._get_tx_offset() < self._get_committed_offset() + 1:
+            return
+        return self._get(self._get_committed_offset() + 1, prefix='txlog_')
 
     def put(self, value):
-        self.begin_db_tx()
-        self._increment_offset()
-        index = self._get_offset()
+        index = self._get_tx_offset() + 1
         record = Record(value, index)
+
+        self.begin_write_batch()
+        self._increment_tx_offset()
         self._put(index, record, prefix='txlog_')
-        self.commit_db_tx()
+        self.commit_write_batch()
+
         self._truncate()
+
+    def get_txs(self):
+        iterator = self._db.iteritems()
+        iterator.seek(b'txlog_')
+        for _, value in iterator:
+            yield pickle.loads(value)
+
+    def get_uncommitted_txs(self):
+        latest_uncommitted_tx = self.get_latest_uncommitted_tx()
+        if latest_uncommitted_tx != None:
+            for index in range(latest_uncommitted_tx.index, self._get_tx_offset() + 1):
+                yield self.get(index)
 
     def _truncate(self):
         if not self._min_age:
@@ -59,7 +81,7 @@ class TxLog:
         keys_to_delete = []
         for key, value in iterator:
             record = pickle.loads(value)
-            if record.timestamp < utils.get_timestamp_ms() - self._min_age * 1000:
+            if record.creation_timestamp < utils.get_timestamp_ms() - self._min_age * 1000:
                 keys_to_delete.append(key)
                 continue
             break
@@ -77,7 +99,7 @@ class TxLog:
             raise TypeError
         key = utils.to_bytes(f'{prefix}{key}')
         bytes_value = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
-        if self._write_batch:
+        if self._write_batch != None:
             self._write_batch.put(key, bytes_value)
         else:
             self._db.put(key, bytes_value, sync=True)
@@ -88,14 +110,14 @@ class TxLog:
     def _get_committed_offset(self):
         return self._get_offset_attribute('committed_index')
 
-    def _increment_offset(self):
+    def _increment_tx_offset(self):
         self._increment_offset_attribute('index')
 
-    def _get_offset(self):
+    def _get_tx_offset(self):
         return self._get_offset_attribute('index')
 
     def _increment_offset_attribute(self, attribute):
-        index = self._get_offset() + 1
+        index = self._get_offset_attribute(attribute) + 1
         record = Record(index)
         self._put(attribute, record, prefix='meta')
 
