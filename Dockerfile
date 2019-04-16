@@ -24,7 +24,9 @@ RUN \
 
 RUN \
     pip install --upgrade pip \
-    && pip install python-rocksdb
+    && pip install \
+        "Cython>=0.20" \
+        python-rocksdb
 
 RUN \
     apt-get -y purge $(diff -u init_pkgs new_pkgs | grep -E "^\+" | cut -d + -f2- | sed -n '1!p') \
