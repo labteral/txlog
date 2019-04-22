@@ -4,22 +4,38 @@
 import rocksdb
 from . import utils
 import logging
-import pickle
+from pickle5 import pickle
 
 
-class Record:
-    def __init__(self, value, index=None):
-        self.value = value
-        self.index = index
+class Transaction:
+    def __init__(self, method, args=None, kwargs=None):
         self.creation_timestamp = utils.get_timestamp_ms()
         self.commitment_timestamp = None
         self.committed = False
 
+        self.method = method
+        if type(args) != list:
+            self.args = [args]
+        else:
+            self.args = args
+        self.kwargs = kwargs
+
+    def exec(self):
+        if self.args:
+            self.method(*self.args)
+        elif self.kwargs:
+            self.method(**self.kwargs)
+        else:
+            self.method()
+
+    def _set_index(self, index):
+        self.index = index
+
 
 class TxLog:
-    # Default to 7 days
-    def __init__(self, chain_dir='./txlog_data', signature_checker=None, circular=True, min_age=604800):
-        self._db = rocksdb.DB(f'{chain_dir}', rocksdb.Options(create_if_missing=True))
+    # 7 days = 604800 seconds
+    def __init__(self, txlog_dir='./txlog_data', signature_checker=None, circular=True, min_age=604800):
+        self._db = rocksdb.DB(f'{txlog_dir}', rocksdb.Options(create_if_missing=True))
         self._write_batch = None
         self._min_age = min_age
 
@@ -31,32 +47,38 @@ class TxLog:
         self._write_batch = None
 
     def commit(self, index):
-        record = self._get(index, prefix='txlog_')
-        if record == None:
+        tx = self._get(index, prefix='txlog_')
+        if tx == None:
             raise IndexError
         assert (self._get_committed_offset() == index - 1)
-        record.committed = True
-        record.commitment_timestamp = utils.get_timestamp_ms()
+        tx.committed = True
+        tx.commitment_timestamp = utils.get_timestamp_ms()
         self.begin_write_batch()
-        self._put(index, record)
+        self._put_tx(index, tx)
         self._increment_committed_offset()
         self.commit_write_batch()
 
     def get(self, index):
         return self._get(index, prefix='txlog_')
 
+    def exec_uncommitted_txs(self):
+        for tx in self.get_uncommitted_txs():
+            tx.value.exec()
+            self.commit(tx.index)
+
     def get_latest_uncommitted_tx(self):
         if self._get_tx_offset() < self._get_committed_offset() + 1:
             return
         return self._get(self._get_committed_offset() + 1, prefix='txlog_')
 
-    def put(self, value):
+    def put(self, tx):
+        if type(tx) != Transaction:
+            raise TypeError
         index = self._get_tx_offset() + 1
-        record = Record(value, index)
-
+        tx._set_index(index)
         self.begin_write_batch()
         self._increment_tx_offset()
-        self._put(index, record, prefix='txlog_')
+        self._put_tx(index, tx)
         self.commit_write_batch()
 
         self._truncate()
@@ -64,8 +86,8 @@ class TxLog:
     def get_txs(self):
         iterator = self._db.iteritems()
         iterator.seek(b'txlog_')
-        for _, value in iterator:
-            yield pickle.loads(value)
+        for _, tx in iterator:
+            yield pickle.loads(tx)
 
     def get_uncommitted_txs(self):
         latest_uncommitted_tx = self.get_latest_uncommitted_tx()
@@ -79,9 +101,9 @@ class TxLog:
         iterator = self._db.iteritems()
         iterator.seek(b'txlog_')
         keys_to_delete = []
-        for key, value in iterator:
-            record = pickle.loads(value)
-            if record.creation_timestamp < utils.get_timestamp_ms() - self._min_age * 1000:
+        for key, tx in iterator:
+            tx = pickle.loads(tx)
+            if tx.creation_timestamp < utils.get_timestamp_ms() - self._min_age * 1000:
                 keys_to_delete.append(key)
                 continue
             break
@@ -90,19 +112,22 @@ class TxLog:
 
     def _get(self, key, prefix=''):
         key_bytes = utils.to_bytes(f'{prefix}{key}')
-        value = self._db.get(key_bytes)
-        if value != None:
-            return pickle.loads(value)
+        tx = self._db.get(key_bytes)
+        if tx != None:
+            return pickle.loads(tx)
 
     def _put(self, key, value, prefix=''):
-        if type(value) != Record:
-            raise TypeError
         key = utils.to_bytes(f'{prefix}{key}')
-        bytes_value = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+        value_bytes = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
         if self._write_batch != None:
-            self._write_batch.put(key, bytes_value)
+            self._write_batch.put(key, value_bytes)
         else:
-            self._db.put(key, bytes_value, sync=True)
+            self._db.put(key, value_bytes, sync=True)
+
+    def _put_tx(self, key, tx):
+        if type(tx) != Transaction:
+            raise TypeError
+        self._put(key, tx, prefix='txlog_')
 
     def _increment_committed_offset(self):
         self._increment_offset_attribute('committed_index')
@@ -118,11 +143,10 @@ class TxLog:
 
     def _increment_offset_attribute(self, attribute):
         index = self._get_offset_attribute(attribute) + 1
-        record = Record(index)
-        self._put(attribute, record, prefix='meta')
+        self._put(attribute, index, prefix='meta')
 
     def _get_offset_attribute(self, attribute):
-        record = self._get(attribute, prefix='meta')
-        if record != None:
-            return int(record.value)
+        value = self._get(attribute, prefix='meta')
+        if value != None:
+            return value
         return -1

@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from .txlog import TxLog
+from .txlog import TxLog, Transaction
 import logging
 
 
-__version__ = '0.0.0.1a'
+__version__ = '0.0.0.4a'
 
 logging.getLogger().setLevel(logging.INFO)
 logging.basicConfig(
