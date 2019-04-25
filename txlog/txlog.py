@@ -54,10 +54,7 @@ class TxLog:
         assert (self._get_committed_offset() == index - 1)
         tx.committed = True
         tx.commitment_timestamp = utils.get_timestamp_ms()
-        self.begin_write_batch()
-        self._put_tx(index, tx)
-        self._increment_committed_offset()
-        self.commit_write_batch()
+        self._update_tx(index, tx)
 
     def get(self, index):
         return self._get(index, prefix='txlog_')
@@ -81,11 +78,7 @@ class TxLog:
             raise TypeError
         index = self._get_tx_offset() + 1
         tx._set_index(index)
-        self.begin_write_batch()
-        self._increment_tx_offset()
         self._put_tx(index, tx)
-        self.commit_write_batch()
-
         self._truncate()
 
     def get_txs(self):
@@ -129,10 +122,24 @@ class TxLog:
         else:
             self._db.put(key, value_bytes, sync=True)
 
-    def _put_tx(self, key, tx):
+    def _update_tx(self, index, tx):
         if type(tx) != Transaction:
             raise TypeError
-        self._put(key, tx, prefix='txlog_')
+        self._put(index, tx, prefix='txlog_')
+
+    def _put_tx(self, index, tx):
+        new_batch = False
+        if self._write_batch == None:
+            self.begin_write_batch()
+            new_batch = True
+
+        if type(tx) != Transaction:
+            raise TypeError
+        self._put(index, tx, prefix='txlog_')
+        self._increment_committed_offset()
+
+        if new_batch:
+            self.commit_write_batch()
 
     def _increment_committed_offset(self):
         self._increment_offset_attribute('committed_index')
