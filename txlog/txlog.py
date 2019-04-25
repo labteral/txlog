@@ -20,13 +20,13 @@ class Transaction:
             self.args = args
         self.kwargs = kwargs
 
-    def exec(self):
+    def exec(self, container_object):
         if self.args:
-            self.method(*self.args)
+            getattr(container_object, self.method)(*self.args)
         elif self.kwargs:
-            self.method(**self.kwargs)
+            getattr(container_object, self.method)(**self.kwargs)
         else:
-            self.method()
+            getattr(container_object, self.method)()
 
     def _set_index(self, index):
         self.index = index
@@ -40,7 +40,8 @@ class TxLog:
         self._min_age = min_age
 
     def begin_write_batch(self):
-        self._write_batch = rocksdb.WriteBatch()
+        if self._write_batch == None:
+            self._write_batch = rocksdb.WriteBatch()
 
     def commit_write_batch(self):
         self._db.write(self._write_batch, sync=True)
@@ -61,9 +62,13 @@ class TxLog:
     def get(self, index):
         return self._get(index, prefix='txlog_')
 
-    def exec_uncommitted_txs(self):
+    def exec_uncommitted_txs(self, container_object):
+        """
+        Executes all pending transactions. The methods for all the uncommitted 
+        transactions should be available in the container object
+        """
         for tx in self.get_uncommitted_txs():
-            tx.value.exec()
+            tx.exec(container_object)
             self.commit(tx.index)
 
     def get_latest_uncommitted_tx(self):
