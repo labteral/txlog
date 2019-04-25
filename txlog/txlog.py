@@ -44,8 +44,9 @@ class TxLog:
             self._write_batch = rocksdb.WriteBatch()
 
     def commit_write_batch(self):
-        self._db.write(self._write_batch, sync=True)
-        self._write_batch = None
+        if self._write_batch != None:
+            self._db.write(self._write_batch, sync=True)
+            self._write_batch = None
 
     def commit(self, index):
         tx = self._get(index, prefix='txlog_')
