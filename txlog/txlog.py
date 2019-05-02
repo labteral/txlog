@@ -5,6 +5,7 @@ import rocksdb
 from rocksdb import DB, WriteBatch, Options
 from . import utils
 from pickle5 import pickle
+import logging
 
 # TODO RESET INDEX % 1M
 # pensar la comparación del assert cuando se haga el index circular
@@ -77,14 +78,15 @@ class Transaction:
 class TxLog:
     def __init__(self, txlog_dir='./txlog_data', signature_checker=None, circular=True, min_age=604800):
         # 7 days = 604800 seconds
+        self._batch_index = None
         self._write_batch = None
         self._min_age = min_age
         self._db = DB(f'{txlog_dir}', Options(create_if_missing=True))
 
     def begin_write_batch(self):
         if self._write_batch is None:
-            self._write_batch = WriteBatch()
             self._batch_index = self._get_index()
+            self._write_batch = WriteBatch()
 
     def commit_write_batch(self):
         if self._write_batch is not None:
@@ -126,6 +128,7 @@ class TxLog:
         if type(tx) != Transaction:
             raise TypeError
         index = self._get_next_index()
+        logging.info(f"put() next index {index}")
         tx.set_index(index)
         self._put_tx(index, tx)
         self._truncate()
@@ -164,12 +167,13 @@ class TxLog:
             return pickle.loads(tx)
 
     def _put(self, key, value, prefix=''):
+        logging.info(f"_put() key {key}")
         key_bytes = utils.to_bytes(f'{prefix}{key}')
         value_bytes = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
-        if self._write_batch is not None:
-            self._write_batch.put(key_bytes, value_bytes)
-        else:
+        if self._write_batch is None:
             self._db.put(key_bytes, value_bytes, sync=True)
+        else:
+            self._write_batch.put(key_bytes, value_bytes)
 
     def _update_tx(self, index, tx):
         if type(tx) != Transaction:
@@ -177,13 +181,14 @@ class TxLog:
         self._put(index, tx, prefix='txlog_')
 
     def _put_tx(self, index, tx):
-        is_batch_new = False
-        if self._write_batch is None:
-            self.begin_write_batch()
-            is_batch_new = True
-
         if type(tx) != Transaction:
             raise TypeError
+
+        is_batch_new = False
+        if self._write_batch is None:
+            is_batch_new = True
+            self.begin_write_batch()
+
         self._put(index, tx, prefix='txlog_')
         self._increment_index()
 
@@ -200,6 +205,8 @@ class TxLog:
         return self._get_int_attribute('offset') + 1
 
     def _increment_index(self):
+        if self._write_batch is not None:
+            self._batch_index += 1
         self._increment_int_attribute('index')
 
     def _get_index(self):
