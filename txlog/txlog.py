@@ -84,11 +84,15 @@ class TxLog:
     def begin_write_batch(self):
         if self._write_batch is None:
             self._write_batch = WriteBatch()
+            self._batch_index = self._get_index()
 
     def commit_write_batch(self):
         if self._write_batch is not None:
             self._db.write(self._write_batch, sync=True)
             self._write_batch = None
+
+    def destroy_write_batch(self):
+        self._write_batch = None
 
     def commit(self, index):
         tx = self._get(index, prefix='txlog_')
@@ -199,9 +203,13 @@ class TxLog:
         self._increment_int_attribute('index')
 
     def _get_index(self):
+        if self._write_batch is not None:
+            return self._batch_index
         return self._get_int_attribute('index')
 
     def _get_next_index(self):
+        if self._write_batch is not None:
+            return self._batch_index + 1
         return self._get_int_attribute('index') + 1
 
     def _increment_int_attribute(self, attribute):
