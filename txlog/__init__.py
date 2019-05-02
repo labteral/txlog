@@ -4,7 +4,7 @@
 from .txlog import TxLog, Transaction
 import logging
 
-__version__ = '0.0.0.10a'
+__version__ = '0.0.0.18a'
 
 logging.getLogger().setLevel(logging.INFO)
 logging.basicConfig(format='%(asctime)-15s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')

@@ -9,13 +9,12 @@ import pickle
 def get_timestamp_ms():
     return int(round(time.time() * 1000))
 
+
 def to_bytes(value):
     if type(value) == int:
         return int_to_bytes(value)
     elif type(value) == str:
         return str_to_bytes(value)
-    elif type(value) == dict:
-        return str_to_bytes(dump_dict(value))
     elif type(value) == bool:
         if value:
             return int_to_bytes(1)
@@ -23,15 +22,18 @@ def to_bytes(value):
     else:
         return pickle.dumps(value, protocol=4)
 
+
 def str_to_bytes(string):
-    if string == None:
+    if string is None:
         return
     return bytes(string, 'utf-8')
 
+
 def bytes_to_str(bytes_string):
-    if bytes_string == None:
+    if bytes_string is None:
         return
     return bytes_string.decode('utf-8')
+
 
 def get_padded_int(integer):
     integer_string = str(integer)
@@ -40,6 +42,7 @@ def get_padded_int(integer):
         raise ValueError
     integer_string = f"{zeros * '0'}{integer_string}"
     return integer_string
+
 
 def int_to_bytes(integer):
     return str_to_bytes(get_padded_int(integer))

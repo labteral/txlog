@@ -2,4 +2,4 @@
 rm dist/*
 python setup.py install
 python setup.py bdist_wheel
-twine upload dist/*
+twine upload dist/*.whl
