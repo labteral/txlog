@@ -4,10 +4,11 @@
 import rocksdb
 from rocksdb import DB, WriteBatch, Options
 from . import utils
-import logging
 from pickle5 import pickle
 
 # TODO RESET INDEX % 1M
+# pensar la comparación del assert cuando se haga el index circular
+# el momento crítico es al volver a empezar
 
 
 class Transaction:
@@ -93,10 +94,11 @@ class TxLog:
         tx = self._get(index, prefix='txlog_')
         if tx is None:
             raise IndexError
-        assert (self._get_committed_offset() == index - 1)
+        assert (self._get_offset() == index - 1)
         tx._committed = True
         tx._commitment_timestamp = utils.get_timestamp_ms()
         self._update_tx(index, tx)
+        self._increment_offset()
 
     def get(self, index):
         return self._get(index, prefix='txlog_')
@@ -111,8 +113,8 @@ class TxLog:
             self.commit(tx.index)
 
     def get_latest_uncommitted_tx(self):
-        next_offset = self._get_next_committed_offset()
-        if self._get_current_index() < next_offset:
+        next_offset = self._get_next_offset()
+        if self._get_index() < next_offset:
             return
         return self._get(next_offset, prefix='txlog_')
 
@@ -131,11 +133,9 @@ class TxLog:
             yield pickle.loads(tx)
 
     def get_uncommitted_txs(self):
-        logging.info("hola")
         latest_uncommitted_tx = self.get_latest_uncommitted_tx()
         if latest_uncommitted_tx is not None:
             for index in range(latest_uncommitted_tx.index, self._get_next_index()):
-                logging.info("go2")
                 yield self.get(index)
 
     def _truncate(self):
@@ -186,19 +186,19 @@ class TxLog:
         if is_batch_new:
             self.commit_write_batch()
 
-    def _increment_committed_offset(self):
-        self._increment_int_attribute('committed_index')
+    def _increment_offset(self):
+        self._increment_int_attribute('offset')
 
-    def _get_committed_offset(self):
-        return self._get_int_attribute('committed_index')
+    def _get_offset(self):
+        return self._get_int_attribute('offset')
 
-    def _get_next_committed_offset(self):
-        return self._get_int_attribute('committed_index') + 1
+    def _get_next_offset(self):
+        return self._get_int_attribute('offset') + 1
 
     def _increment_index(self):
         self._increment_int_attribute('index')
 
-    def _get_current_index(self):
+    def _get_index(self):
         return self._get_int_attribute('index')
 
     def _get_next_index(self):
