@@ -97,7 +97,7 @@ class TxLog:
         self._write_batch = None
 
     def commit(self, index):
-        tx = self._get(index, prefix='txlog_')
+        tx = self._get(utils.get_padded_int(index), prefix='txlog_')
         if tx is None:
             raise IndexError
         assert (self._get_offset() == index - 1)
@@ -107,7 +107,7 @@ class TxLog:
         self._increment_offset()
 
     def get(self, index):
-        return self._get(index, prefix='txlog_')
+        return self._get(utils.get_padded_int(index), prefix='txlog_')
 
     def exec_uncommitted_txs(self, container_object=None):
         """
@@ -118,17 +118,10 @@ class TxLog:
             tx.exec(container_object)
             self.commit(tx.index)
 
-    def get_latest_uncommitted_tx(self):
-        next_offset = self._get_next_offset()
-        if self._get_index() < next_offset:
-            return
-        return self._get(next_offset, prefix='txlog_')
-
     def put(self, tx):
         if type(tx) != Transaction:
             raise TypeError
         index = self._get_next_index()
-        logging.info(f"put() next index {index}")
         tx.set_index(index)
         self._put_tx(index, tx)
         self._truncate()
@@ -139,10 +132,16 @@ class TxLog:
         for _, tx in iterator:
             yield pickle.loads(tx)
 
+    def get_first_uncommitted_tx(self):
+        next_offset = self._get_next_offset()
+        if self._get_index() < next_offset:
+            return
+        return self._get(utils.get_padded_int(next_offset), prefix='txlog_')
+
     def get_uncommitted_txs(self):
-        latest_uncommitted_tx = self.get_latest_uncommitted_tx()
-        if latest_uncommitted_tx is not None:
-            for index in range(latest_uncommitted_tx.index, self._get_next_index()):
+        first_uncommitted_tx = self.get_first_uncommitted_tx()
+        if first_uncommitted_tx is not None:
+            for index in range(first_uncommitted_tx.index, self._get_next_index()):
                 yield self.get(index)
 
     def _truncate(self):
@@ -167,7 +166,6 @@ class TxLog:
             return pickle.loads(tx)
 
     def _put(self, key, value, prefix=''):
-        logging.info(f"_put() key {key}")
         key_bytes = utils.to_bytes(f'{prefix}{key}')
         value_bytes = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
         if self._write_batch is None:
@@ -178,7 +176,7 @@ class TxLog:
     def _update_tx(self, index, tx):
         if type(tx) != Transaction:
             raise TypeError
-        self._put(index, tx, prefix='txlog_')
+        self._put(utils.get_padded_int(index), tx, prefix='txlog_')
 
     def _put_tx(self, index, tx):
         if type(tx) != Transaction:
@@ -189,7 +187,7 @@ class TxLog:
             is_batch_new = True
             self.begin_write_batch()
 
-        self._put(index, tx, prefix='txlog_')
+        self._put(utils.get_padded_int(index), tx, prefix='txlog_')
         self._increment_index()
 
         if is_batch_new:
@@ -205,8 +203,6 @@ class TxLog:
         return self._get_int_attribute('offset') + 1
 
     def _increment_index(self):
-        if self._write_batch is not None:
-            self._batch_index += 1
         self._increment_int_attribute('index')
 
     def _get_index(self):
@@ -220,12 +216,16 @@ class TxLog:
         return self._get_int_attribute('index') + 1
 
     def _increment_int_attribute(self, attribute):
-        index = self._get_int_attribute(attribute) + 1
+        if attribute == 'index' and self._write_batch is not None:
+            self._batch_index += 1
+            index = self._batch_index
+        else:
+            index = self._get_int_attribute(attribute) + 1
         self._put(attribute, index, prefix='meta')
 
     def _get_int_attribute(self, attribute):
         value = self._get(attribute, prefix='meta')
         if value is not None:
-            return value
+            return int(value)
         else:
             return -1
