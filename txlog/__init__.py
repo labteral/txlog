@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from .txlog import TxLog, Transaction
+from .txlog import Transaction as LogTransaction
 import logging
 
 __version__ = '0.0.0.28a'
