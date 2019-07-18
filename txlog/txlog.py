@@ -1,29 +1,39 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import rocksdb
-from rocksdb import DB, WriteBatch, Options
-from . import utils
-from pickle5 import pickle
+from easyrocks import DB, WriteBatch, utils
 import logging
+import time
 
 # TODO RESET INDEX % 1M
 # pensar la comparación del assert cuando se haga el index circular
 # el momento crítico es al volver a empezar
 
 
+def get_timestamp_ms():
+    return int(round(time.time() * 1000))
+
+
 class Transaction:
     def __init__(self, method, args=None, kwargs=None):
-        self._creation_timestamp = utils.get_timestamp_ms()
+        self._creation_timestamp = get_timestamp_ms()
         self._commitment_timestamp = None
         self._committed = False
 
         self._method = method
-        if type(args) != list:
-            self._args = [args]
-        else:
+
+        if args is None:
+            self._args = []
+        elif isinstance(args, list):
             self._args = args
-        self._kwargs = kwargs
+        else:
+            self._args = [args]
+
+        if kwargs is None:
+            self._kwargs = {}
+        else:
+            self._kwargs = kwargs
+
         self._index = None
 
     @property
@@ -64,12 +74,7 @@ class Transaction:
         else:
             method = getattr(container_object, self._method)
 
-        if self._args is not None:
-            method(*self._args)
-        elif self._kwargs is not None:
-            method(**self._kwargs)
-        else:
-            method()
+        method(*self._args, **self._kwargs)
 
     def set_index(self, index):
         self._index = index
@@ -81,7 +86,7 @@ class TxLog:
         self._batch_index = None
         self._write_batch = None
         self._min_age = min_age
-        self._db = DB(f'{txlog_dir}', Options(create_if_missing=True))
+        self._db = DB(f'{txlog_dir}')
 
     def begin_write_batch(self):
         if self._write_batch is None:
@@ -97,17 +102,17 @@ class TxLog:
         self._write_batch = None
 
     def commit(self, index):
-        tx = self._get(utils.get_padded_int(index), prefix='txlog_')
+        tx = self._db.get(f'txlog_{utils.get_padded_int(index)}')
         if tx is None:
             raise IndexError
         assert (self._get_offset() == index - 1)
         tx._committed = True
-        tx._commitment_timestamp = utils.get_timestamp_ms()
+        tx._commitment_timestamp = get_timestamp_ms()
         self._update_tx(index, tx)
         self._increment_offset()
 
     def get(self, index):
-        return self._get(utils.get_padded_int(index), prefix='txlog_')
+        return self._db.get(f'txlog_{utils.get_padded_int(index)}')
 
     def exec_uncommitted_txs(self, container_object=None):
         """
@@ -119,7 +124,7 @@ class TxLog:
             self.commit(tx.index)
 
     def put(self, tx):
-        if type(tx) != Transaction:
+        if not isinstance(tx, Transaction):
             raise TypeError
         index = self._get_next_index()
         tx.set_index(index)
@@ -127,16 +132,14 @@ class TxLog:
         self._truncate()
 
     def get_txs(self):
-        iterator = self._db.iteritems()
-        iterator.seek(b'txlog_')
-        for _, tx in iterator:
-            yield pickle.loads(tx)
+        for _, tx in self._db.scan(prefix='txlog_'):
+            yield tx
 
     def get_first_uncommitted_tx(self):
         next_offset = self._get_next_offset()
         if self._get_index() < next_offset:
             return
-        return self._get(utils.get_padded_int(next_offset), prefix='txlog_')
+        return self._db.get(f'txlog_{utils.get_padded_int(next_offset)}')
 
     def get_uncommitted_txs(self):
         first_uncommitted_tx = self.get_first_uncommitted_tx()
@@ -147,39 +150,23 @@ class TxLog:
     def _truncate(self):
         if self._min_age is None:
             return
-        iterator = self._db.iteritems()
-        iterator.seek(b'txlog_')
+
         keys_to_delete = []
-        for key, tx in iterator:
-            tx = pickle.loads(tx)
-            if tx._creation_timestamp < utils.get_timestamp_ms() - self._min_age * 1000:
+        for key, tx in self._db.scan(prefix='txlog_'):
+            if tx._creation_timestamp < get_timestamp_ms() - self._min_age * 1000:
                 keys_to_delete.append(key)
                 continue
             break
         for key in keys_to_delete:
             self._db.delete(key)
 
-    def _get(self, key, prefix=''):
-        key_bytes = utils.to_bytes(f'{prefix}{key}')
-        tx = self._db.get(key_bytes)
-        if tx is not None:
-            return pickle.loads(tx)
-
-    def _put(self, key, value, prefix=''):
-        key_bytes = utils.to_bytes(f'{prefix}{key}')
-        value_bytes = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
-        if self._write_batch is None:
-            self._db.put(key_bytes, value_bytes, sync=True)
-        else:
-            self._write_batch.put(key_bytes, value_bytes)
-
     def _update_tx(self, index, tx):
-        if type(tx) != Transaction:
+        if not isinstance(tx, Transaction):
             raise TypeError
-        self._put(utils.get_padded_int(index), tx, prefix='txlog_')
+        self._db.put(f'txlog_{utils.get_padded_int(index)}', tx)
 
     def _put_tx(self, index, tx):
-        if type(tx) != Transaction:
+        if not isinstance(tx, Transaction):
             raise TypeError
 
         is_batch_new = False
@@ -187,7 +174,7 @@ class TxLog:
             is_batch_new = True
             self.begin_write_batch()
 
-        self._put(utils.get_padded_int(index), tx, prefix='txlog_')
+        self._db.put(f'txlog_{utils.get_padded_int(index)}', tx)
         self._increment_index()
 
         if is_batch_new:
@@ -221,10 +208,10 @@ class TxLog:
             index = self._batch_index
         else:
             index = self._get_int_attribute(attribute) + 1
-        self._put(attribute, index, prefix='meta')
+        self._db.put(f'meta_{attribute}', index)
 
     def _get_int_attribute(self, attribute):
-        value = self._get(attribute, prefix='meta')
+        value = self._db.get(f'meta_{attribute}')
         if value is not None:
             return int(value)
         else:
