@@ -94,9 +94,7 @@ class TxLog:
             self._write_batch = WriteBatch()
 
     def commit_write_batch(self):
-        if self._write_batch is not None:
-            self._db.write(self._write_batch, sync=True)
-            self._write_batch = None
+        self._db.commit(self._write_batch)
 
     def destroy_write_batch(self):
         self._write_batch = None
@@ -123,7 +121,7 @@ class TxLog:
             tx.exec(container_object)
             self.commit(tx.index)
 
-    def put(self, tx):
+    def add(self, tx):
         if not isinstance(tx, Transaction):
             raise TypeError
         index = self._get_next_index()
@@ -163,7 +161,7 @@ class TxLog:
     def _update_tx(self, index, tx):
         if not isinstance(tx, Transaction):
             raise TypeError
-        self._db.put(f'txlog_{utils.get_padded_int(index)}', tx)
+        self._db.put(f'txlog_{utils.get_padded_int(index)}', tx, write_batch=self._write_batch)
 
     def _put_tx(self, index, tx):
         if not isinstance(tx, Transaction):
@@ -174,7 +172,7 @@ class TxLog:
             is_batch_new = True
             self.begin_write_batch()
 
-        self._db.put(f'txlog_{utils.get_padded_int(index)}', tx)
+        self._db.put(f'txlog_{utils.get_padded_int(index)}', tx, write_batch=self._write_batch)
         self._increment_index()
 
         if is_batch_new:
@@ -208,11 +206,10 @@ class TxLog:
             index = self._batch_index
         else:
             index = self._get_int_attribute(attribute) + 1
-        self._db.put(f'meta_{attribute}', index)
+        self._db.put(f'meta_{attribute}', index, write_batch=self._write_batch)
 
     def _get_int_attribute(self, attribute):
         value = self._db.get(f'meta_{attribute}')
-        if value is not None:
-            return int(value)
-        else:
+        if value is None:
             return -1
+        return value
