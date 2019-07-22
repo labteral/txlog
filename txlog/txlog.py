@@ -103,11 +103,15 @@ class TxLog:
         tx = self._db.get(f'txlog_{utils.get_padded_int(index)}')
         if tx is None:
             raise IndexError
-        assert (self._get_offset() == index - 1)
+
+        new_write_batch = self._write_batch is None
+        self.begin_write_batch()
         tx._committed = True
         tx._commitment_timestamp = get_timestamp_ms()
         self._update_tx(index, tx)
         self._increment_offset()
+        if new_write_batch:
+            self.commit_write_batch()
 
     def get(self, index):
         return self._db.get(f'txlog_{utils.get_padded_int(index)}')
