@@ -17,8 +17,6 @@ def method_with_two_params(param1, param2=None):
     print(f'method_with_two_params({param1}, {param2}) executed')
 
 
-print(globals()['method_with_two_params'])
-
 TXLOG_PATH = './txlog'
 shutil.rmtree(TXLOG_PATH)
 txlog = TxLog(path=TXLOG_PATH)
@@ -29,10 +27,29 @@ call3 = Call('method_with_two_params', kwargs={'param1': 'value1', 'param2': 'va
 
 txlog.begin()
 txlog.add(call1)
-txlog.add(call2)
-txlog.add(call3)
+# txlog.add(call2)
+# txlog.add(call3)
 txlog.commit()
+# txlog.commit()
+
+for tx in txlog.get_calls():
+    print(tx._committed)
+    print(tx.index)
+
+print("Hola")
+txlog.print_uncommitted_calls()
+print("ciao")
+
+raise SystemExit
+
+txlog.exec_uncommitted_calls(globals())
+
+for tx in txlog.get_uncommitted_calls():
+    print(tx._committed)
+    print(tx.index)
 
 txlog.print_uncommitted_calls()
 
-txlog.exec_uncommitted_calls(globals())
+# print(call2)
+# txlog.add(call2)
+# txlog.print_uncommitted_calls()

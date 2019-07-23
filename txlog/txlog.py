@@ -104,8 +104,13 @@ class TxLog:
     def rollback(self):
         self._write_batch = None
 
+    @staticmethod
+    def _get_call_key(index):
+        return f'txlog_{utils.get_padded_int(index)}'
+
     def commit_call(self, index):
-        call = self._db.get(f'txlog_{utils.get_padded_int(index)}')
+        call_key = TxLog._get_call_key(index)
+        call = self._db.get(call_key)
         if call is None:
             raise IndexError
 
@@ -119,7 +124,8 @@ class TxLog:
             self.commit()
 
     def get(self, index):
-        return self._db.get(f'txlog_{utils.get_padded_int(index)}')
+        call_key = TxLog._get_call_key(index)
+        return self._db.get(call_key)
 
     def exec_uncommitted_calls(self, container_object=None):
         """
@@ -138,25 +144,30 @@ class TxLog:
         self._put_call(index, call)
         self._truncate()
 
+    def print_calls(self):
+        for call in self.get_calls():
+            print(call._method_name, call._args, call._kwargs)
+
+    def print_uncommitted_calls(self):
+        for call in self.get_uncommitted_calls():
+            print(call._method_name, call._args, call._kwargs)
+
     def get_calls(self):
         for _, call in self._db.scan(prefix='txlog_'):
             yield call
 
     def get_first_uncommitted_call(self):
         next_offset = self._get_next_offset()
-        if self._get_index() < next_offset:
+        if next_offset > self._get_index():
             return
-        return self._db.get(f'txlog_{utils.get_padded_int(next_offset)}')
+        call_key = TxLog._get_call_key(next_offset)
+        return self._db.get(call_key)
 
     def get_uncommitted_calls(self):
         first_uncommitted_call = self.get_first_uncommitted_call()
         if first_uncommitted_call is not None:
             for index in range(first_uncommitted_call.index, self._get_next_index()):
                 yield self.get(index)
-
-    def print_uncommitted_calls(self):
-        for call in self.get_uncommitted_calls():
-            print(call._method_name, call._args, call._kwargs)
 
     def _truncate(self):
         if self._min_age is None:
@@ -176,7 +187,8 @@ class TxLog:
     def _update_call(self, index, call):
         if not isinstance(call, Call):
             raise TypeError
-        self._db.put(f'txlog_{utils.get_padded_int(index)}', call, write_batch=self._write_batch)
+        call_key = TxLog._get_call_key(index)
+        self._db.put(call_key, call, write_batch=self._write_batch)
 
     def _put_call(self, index, call):
         if not isinstance(call, Call):
@@ -187,7 +199,8 @@ class TxLog:
             is_batch_new = True
             self.begin()
 
-        self._db.put(f'txlog_{utils.get_padded_int(index)}', call, write_batch=self._write_batch)
+        call_key = TxLog._get_call_key(index)
+        self._db.put(call_key, call, write_batch=self._write_batch)
         self._increment_index()
 
         if is_batch_new:
