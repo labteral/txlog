@@ -4,6 +4,7 @@
 from easyrocks import DB, WriteBatch, utils
 import logging
 import time
+import builtins
 
 # TODO RESET INDEX % 1M
 # pensar la comparación del assert cuando se haga el index circular
@@ -14,13 +15,13 @@ def get_timestamp_ms():
     return int(round(time.time() * 1000))
 
 
-class Transaction:
+class Call:
     def __init__(self, method, args=None, kwargs=None):
         self._creation_timestamp = get_timestamp_ms()
         self._commitment_timestamp = None
         self._committed = False
 
-        self._method = method
+        self._method_name = method
 
         if args is None:
             self._args = []
@@ -50,7 +51,7 @@ class Transaction:
 
     @property
     def method(self):
-        return self._method
+        return self._method_name
 
     @property
     def args(self):
@@ -67,12 +68,16 @@ class Transaction:
     def exec(self, container_object=None):
         if container_object is None:
             try:
-                method = globals()[self._method]
+                method = globals()[self._method_name]
             except KeyError:
-                import builtins
-                method = getattr(builtins, self._method)
+                try:
+                    method = getattr(builtins, self._method_name)
+                except KeyError:
+                    raise ValueError('Method not found')
+        elif isinstance(container_object, dict):
+            method = container_object[self._method_name]
         else:
-            method = getattr(container_object, self._method)
+            method = getattr(container_object, self._method_name)
 
         method(*self._args, **self._kwargs)
 
@@ -81,106 +86,112 @@ class Transaction:
 
 
 class TxLog:
-    def __init__(self, txlog_dir='./txlog_data', signature_checker=None, circular=True, min_age=604800):
+    def __init__(self, path='./txlog_data', min_age=604800):
         # 7 days = 604800 seconds
         self._batch_index = None
         self._write_batch = None
         self._min_age = min_age
-        self._db = DB(f'{txlog_dir}')
+        self._db = DB(f'{path}')
 
-    def begin_write_batch(self):
+    def begin(self):
         if self._write_batch is None:
             self._batch_index = self._get_index()
             self._write_batch = WriteBatch()
 
-    def commit_write_batch(self):
+    def commit(self):
         self._db.commit(self._write_batch)
 
-    def destroy_write_batch(self):
+    def rollback(self):
         self._write_batch = None
 
-    def commit(self, index):
-        tx = self._db.get(f'txlog_{utils.get_padded_int(index)}')
-        if tx is None:
+    def commit_call(self, index):
+        call = self._db.get(f'txlog_{utils.get_padded_int(index)}')
+        if call is None:
             raise IndexError
 
         new_write_batch = self._write_batch is None
-        self.begin_write_batch()
-        tx._committed = True
-        tx._commitment_timestamp = get_timestamp_ms()
-        self._update_tx(index, tx)
+        self.begin()
+        call._committed = True
+        call._commitment_timestamp = get_timestamp_ms()
+        self._update_call(index, call)
         self._increment_offset()
         if new_write_batch:
-            self.commit_write_batch()
+            self.commit()
 
     def get(self, index):
         return self._db.get(f'txlog_{utils.get_padded_int(index)}')
 
-    def exec_uncommitted_txs(self, container_object=None):
+    def exec_uncommitted_calls(self, container_object=None):
         """
-        Executes all pending transactions. The methods for all the uncommitted 
-        transactions should be available in the container object
+        Executes all pending Calls. The methods for all the uncommitted 
+        Calls should be available in the container object
         """
-        for tx in self.get_uncommitted_txs():
-            tx.exec(container_object)
-            self.commit(tx.index)
+        for call in self.get_uncommitted_calls():
+            call.exec(container_object)
+            self.commit_call(call.index)
 
-    def add(self, tx):
-        if not isinstance(tx, Transaction):
+    def add(self, call):
+        if not isinstance(call, Call):
             raise TypeError
         index = self._get_next_index()
-        tx.set_index(index)
-        self._put_tx(index, tx)
+        call.set_index(index)
+        self._put_call(index, call)
         self._truncate()
 
-    def get_txs(self):
-        for _, tx in self._db.scan(prefix='txlog_'):
-            yield tx
+    def get_calls(self):
+        for _, call in self._db.scan(prefix='txlog_'):
+            yield call
 
-    def get_first_uncommitted_tx(self):
+    def get_first_uncommitted_call(self):
         next_offset = self._get_next_offset()
         if self._get_index() < next_offset:
             return
         return self._db.get(f'txlog_{utils.get_padded_int(next_offset)}')
 
-    def get_uncommitted_txs(self):
-        first_uncommitted_tx = self.get_first_uncommitted_tx()
-        if first_uncommitted_tx is not None:
-            for index in range(first_uncommitted_tx.index, self._get_next_index()):
+    def get_uncommitted_calls(self):
+        first_uncommitted_call = self.get_first_uncommitted_call()
+        if first_uncommitted_call is not None:
+            for index in range(first_uncommitted_call.index, self._get_next_index()):
                 yield self.get(index)
+
+    def print_uncommitted_calls(self):
+        for call in self.get_uncommitted_calls():
+            print(call._method_name, call._args, call._kwargs)
 
     def _truncate(self):
         if self._min_age is None:
             return
 
         keys_to_delete = []
-        for key, tx in self._db.scan(prefix='txlog_'):
-            if tx._creation_timestamp < get_timestamp_ms() - self._min_age * 1000:
-                keys_to_delete.append(key)
-                continue
+        for key, call in self._db.scan(prefix='txlog_'):
+            if call._committed:
+                if call._creation_timestamp < get_timestamp_ms() - self._min_age * 1000:
+                    keys_to_delete.append(key)
+                    continue
+
             break
         for key in keys_to_delete:
             self._db.delete(key)
 
-    def _update_tx(self, index, tx):
-        if not isinstance(tx, Transaction):
+    def _update_call(self, index, call):
+        if not isinstance(call, Call):
             raise TypeError
-        self._db.put(f'txlog_{utils.get_padded_int(index)}', tx, write_batch=self._write_batch)
+        self._db.put(f'txlog_{utils.get_padded_int(index)}', call, write_batch=self._write_batch)
 
-    def _put_tx(self, index, tx):
-        if not isinstance(tx, Transaction):
+    def _put_call(self, index, call):
+        if not isinstance(call, Call):
             raise TypeError
 
         is_batch_new = False
         if self._write_batch is None:
             is_batch_new = True
-            self.begin_write_batch()
+            self.begin()
 
-        self._db.put(f'txlog_{utils.get_padded_int(index)}', tx, write_batch=self._write_batch)
+        self._db.put(f'txlog_{utils.get_padded_int(index)}', call, write_batch=self._write_batch)
         self._increment_index()
 
         if is_batch_new:
-            self.commit_write_batch()
+            self.commit()
 
     def _increment_offset(self):
         self._increment_int_attribute('offset')
