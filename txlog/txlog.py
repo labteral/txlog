@@ -100,6 +100,7 @@ class TxLog:
 
     def commit(self):
         self._db.commit(self._write_batch)
+        self._write_batch = None
 
     def rollback(self):
         self._write_batch = None
@@ -143,6 +144,7 @@ class TxLog:
         call.set_index(index)
         self._put_call(index, call)
         self._truncate()
+        return index
 
     def print_calls(self):
         for call in self.get_calls():
