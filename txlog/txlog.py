@@ -86,11 +86,12 @@ class Call:
 
 
 class TxLog:
-    def __init__(self, path='./txlog_data', min_age=604800):
-        # 7 days = 604800 seconds
+    def __init__(self, path='./txlog_data', committed_ttl_seconds=2592000, max_committed_items=10000):
+        # 30 days = 2592000 seconds
         self._batch_index = None
         self._write_batch = None
-        self._min_age = min_age
+        self._committed_ttl_seconds = committed_ttl_seconds
+        self._max_committed_items = max_committed_items
         self._db = DB(f'{path}')
 
     def begin(self):
@@ -121,6 +122,7 @@ class TxLog:
         call._commitment_timestamp = get_timestamp_ms()
         self._update_call(index, call)
         self._increment_offset()
+        self.truncate()
         if new_write_batch:
             self.commit()
 
@@ -143,7 +145,6 @@ class TxLog:
         index = self._get_next_index()
         call.set_index(index)
         self._put_call(index, call)
-        self._truncate()
         return index
 
     def print_calls(self):
@@ -171,20 +172,36 @@ class TxLog:
             for index in range(first_uncommitted_call.index, self._get_next_index()):
                 yield self.get(index)
 
-    def _truncate(self):
-        if self._min_age is None:
+    def truncate(self):
+        if self._max_committed_items is None and self._committed_ttl_seconds is None:
             return
 
-        keys_to_delete = []
+        committed_calls = self.count_committed_calls()
         for key, call in self._db.scan(prefix='txlog_'):
             if call._committed:
-                if call._creation_timestamp < get_timestamp_ms() - self._min_age * 1000:
-                    keys_to_delete.append(key)
-                    continue
+                if committed_calls >= self._max_committed_items:
+                    self._db.delete(key)
+                    committed_calls -= 1
 
+        for key, call in self._db.scan(prefix='txlog_'):
+            timestamp = get_timestamp_ms()
+            if call._creation_timestamp <= timestamp - self._committed_ttl_seconds * 1000:
+                self._db.delete(key)
+                continue
             break
-        for key in keys_to_delete:
-            self._db.delete(key)
+
+    def count_committed_calls(self):
+        counter = 0
+        for _, call in self._db.scan(prefix='txlog_'):
+            if call._committed:
+                counter += 1
+        return counter
+
+    def count_calls(self):
+        counter = 0
+        for _, call in self._db.scan(prefix='txlog_'):
+            counter += 1
+        return counter
 
     def _update_call(self, index, call):
         if not isinstance(call, Call):

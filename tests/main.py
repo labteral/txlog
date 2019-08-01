@@ -4,23 +4,22 @@
 from txlog import TxLog, Call
 import shutil
 import os
+import time
+
 global_var = 0
 
 
 def method_without_params():
-    print('method_without_params executed')
     global global_var
     global_var += 1
 
 
 def method_with_one_param(param1):
-    print(f'method_with_one_param({param1}) executed')
     global global_var
     global_var += 2
 
 
 def method_with_two_params(param1, param2=None):
-    print(f'method_with_two_params({param1}, {param2}) executed')
     global global_var
     global_var += 3
 
@@ -30,7 +29,7 @@ try:
     shutil.rmtree(TXLOG_PATH)
 except FileNotFoundError:
     os.makedirs(TXLOG_PATH)
-txlog = TxLog(path=TXLOG_PATH)
+txlog = TxLog(path=TXLOG_PATH, max_committed_items=3, committed_ttl_seconds=1)
 
 # Define three calls
 call1 = Call('method_without_params')
@@ -57,6 +56,7 @@ assert i == 2
 txlog.get(0).exec(globals())
 txlog.commit_call(0)
 assert txlog.get(0).committed
+assert txlog.count_committed_calls() == 1
 
 # Check that the first method was executed correctly
 assert global_var == 1
@@ -69,6 +69,8 @@ assert i == 1
 # Exec the calls 2 and 3 and check that they were correctly executed
 txlog.exec_uncommitted_calls(globals())
 assert global_var == 6
+assert txlog.count_calls() == 3
+assert txlog.count_committed_calls() == 3
 
 # Check there are not uncommitted calls left
 for call in txlog.get_uncommitted_calls():
@@ -79,4 +81,20 @@ for i, call in enumerate(txlog.get_calls()):
     assert call.committed
 assert i == 2
 
-print('\nPASS!')
+# Check max_committed_items
+assert txlog.add(call1) == 3
+assert txlog.add(call2) == 4
+assert txlog.add(call3) == 5
+assert txlog.count_calls() == 6
+assert txlog.count_committed_calls() == 3
+txlog.exec_uncommitted_calls(globals())
+assert txlog.count_calls() == 3
+assert txlog.count_committed_calls() == 3
+
+# Check committed_ttl_seconds
+time.sleep(1)
+txlog.truncate()
+assert txlog.count_calls() == 0
+assert txlog.count_committed_calls() == 0
+
+print('PASS!')
