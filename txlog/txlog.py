@@ -110,19 +110,13 @@ class TxLog:
     def _get_call_key(index):
         return f'txlog_{utils.get_padded_int(index)}'
 
-    def commit_call(self, index):
-        call_key = TxLog._get_call_key(index)
-        call = self._db.get(call_key)
-        if call is None:
-            raise IndexError
-
+    def commit_call(self, call):
         new_write_batch = self._write_batch is None
         self.begin()
         call._committed = True
         call._commitment_timestamp = get_timestamp_ms()
-        self._update_call(index, call)
+        self._update_call(call.index, call)
         self._increment_offset()
-        self.truncate()
         if new_write_batch:
             self.commit()
 
@@ -137,7 +131,7 @@ class TxLog:
         """
         for call in self.get_uncommitted_calls():
             call.exec(container_object)
-            self.commit_call(call.index)
+            self.commit_call(call)
 
     def add(self, call):
         if not isinstance(call, Call):
