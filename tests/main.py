@@ -24,7 +24,7 @@ def method_with_two_params(param1, param2=None):
     global_var += 3
 
 
-TXLOG_PATH = './txlog'
+TXLOG_PATH = '/tmp/txlog'
 try:
     shutil.rmtree(TXLOG_PATH)
 except FileNotFoundError:
@@ -54,7 +54,7 @@ assert i == 2
 
 # Execute the first call and check it is commited
 txlog.get(0).exec(globals())
-txlog.commit_call(0)
+txlog.commit_call(txlog.get(0))
 assert txlog.get(0).committed
 assert txlog.count_committed_calls() == 1
 
@@ -88,6 +88,7 @@ assert txlog.add(call3) == 5
 assert txlog.count_calls() == 6
 assert txlog.count_committed_calls() == 3
 txlog.exec_uncommitted_calls(globals())
+txlog.truncate()
 assert txlog.count_calls() == 3
 assert txlog.count_committed_calls() == 3
 

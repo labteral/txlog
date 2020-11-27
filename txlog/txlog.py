@@ -5,6 +5,7 @@ from easyrocks import DB, WriteBatch, utils
 import logging
 import time
 import builtins
+from typing import Generator
 
 # TODO RESET INDEX % 1M
 # pensar la comparación del assert cuando se haga el index circular
@@ -86,7 +87,10 @@ class Call:
 
 
 class TxLog:
-    def __init__(self, path='./txlog_data', committed_ttl_seconds=2592000, max_committed_items=10000):
+    def __init__(self,
+                 path='./txlog_data',
+                 committed_ttl_seconds=2592000,
+                 max_committed_items=0):
         # 30 days = 2592000 seconds
         self._batch_index = None
         self._write_batch = None
@@ -107,10 +111,10 @@ class TxLog:
         self._write_batch = None
 
     @staticmethod
-    def _get_call_key(index):
+    def _get_call_key(index: int):
         return f'txlog_{utils.get_padded_int(index)}'
 
-    def commit_call(self, call):
+    def commit_call(self, call: Call):
         new_write_batch = self._write_batch is None
         self.begin()
         call._committed = True
@@ -120,20 +124,16 @@ class TxLog:
         if new_write_batch:
             self.commit()
 
-    def get(self, index):
+    def get(self, index: int) -> Call:
         call_key = TxLog._get_call_key(index)
         return self._db.get(call_key)
 
     def exec_uncommitted_calls(self, container_object=None):
-        """
-        Executes all pending Calls. The methods for all the uncommitted 
-        Calls should be available in the container object
-        """
         for call in self.get_uncommitted_calls():
             call.exec(container_object)
             self.commit_call(call)
 
-    def add(self, call):
+    def add(self, call: Call):
         if not isinstance(call, Call):
             raise TypeError
         index = self._get_next_index()
@@ -149,61 +149,65 @@ class TxLog:
         for call in self.get_uncommitted_calls():
             print(call._method_name, call._args, call._kwargs)
 
-    def get_calls(self):
+    def get_calls(self) -> Generator[Call, None, None]:
         for _, call in self._db.scan(prefix='txlog_'):
             yield call
 
-    def get_first_uncommitted_call(self):
+    def get_first_uncommitted_call(self) -> Call:
         next_offset = self._get_next_offset()
         if next_offset > self._get_index():
             return
         call_key = TxLog._get_call_key(next_offset)
         return self._db.get(call_key)
 
-    def get_uncommitted_calls(self):
+    def get_uncommitted_calls(self) -> Generator[Call, None, None]:
         first_uncommitted_call = self.get_first_uncommitted_call()
         if first_uncommitted_call is not None:
             for index in range(first_uncommitted_call.index, self._get_next_index()):
                 yield self.get(index)
 
     def truncate(self):
-        if self._max_committed_items is None and self._committed_ttl_seconds is None:
-            return
+        if self._committed_ttl_seconds:
+            for key, call in self._db.scan(prefix='txlog_'):
+                if not call._committed:
+                    continue
 
-        committed_calls = self.count_committed_calls()
-        for key, call in self._db.scan(prefix='txlog_'):
-            if call._committed:
-                if committed_calls >= self._max_committed_items:
+                min_timestamp = get_timestamp_ms() - self._committed_ttl_seconds * 1000
+                if call._creation_timestamp <= min_timestamp:
                     self._db.delete(key)
-                    committed_calls -= 1
 
-        for key, call in self._db.scan(prefix='txlog_'):
-            timestamp = get_timestamp_ms()
-            if call._creation_timestamp <= timestamp - self._committed_ttl_seconds * 1000:
+        if self._max_committed_items:
+            committed_calls_no = self.count_committed_calls()
+            for key, call in self._db.scan(prefix='txlog_'):
+                if committed_calls_no <= self._max_committed_items:
+                    break
+
+                if not call._committed:
+                    break
+
                 self._db.delete(key)
-                continue
-            break
+                committed_calls_no -= 1
 
-    def count_committed_calls(self):
+    def count_committed_calls(self) -> int:
         counter = 0
         for _, call in self._db.scan(prefix='txlog_'):
             if call._committed:
                 counter += 1
         return counter
 
-    def count_calls(self):
+    def count_calls(self) -> int:
         counter = 0
-        for _, call in self._db.scan(prefix='txlog_'):
+        for _, _ in self._db.scan(prefix='txlog_'):
             counter += 1
         return counter
 
-    def _update_call(self, index, call):
+    def _update_call(self, index: int, call: Call):
         if not isinstance(call, Call):
             raise TypeError
         call_key = TxLog._get_call_key(index)
         self._db.put(call_key, call, write_batch=self._write_batch)
 
-    def _put_call(self, index, call):
+    def _put_call(self, index: int, call: Call):
         if not isinstance(call, Call):
             raise TypeError
 
@@ -222,26 +226,26 @@ class TxLog:
     def _increment_offset(self):
         self._increment_int_attribute('offset')
 
-    def _get_offset(self):
+    def _get_offset(self) -> int:
         return self._get_int_attribute('offset')
 
-    def _get_next_offset(self):
+    def _get_next_offset(self) -> int:
         return self._get_int_attribute('offset') + 1
 
     def _increment_index(self):
         self._increment_int_attribute('index')
 
-    def _get_index(self):
+    def _get_index(self) -> int:
         if self._write_batch is not None:
             return self._batch_index
         return self._get_int_attribute('index')
 
-    def _get_next_index(self):
+    def _get_next_index(self) -> int:
         if self._write_batch is not None:
             return self._batch_index + 1
         return self._get_int_attribute('index') + 1
 
-    def _increment_int_attribute(self, attribute):
+    def _increment_int_attribute(self, attribute: str):
         if attribute == 'index' and self._write_batch is not None:
             self._batch_index += 1
             index = self._batch_index
@@ -249,7 +253,7 @@ class TxLog:
             index = self._get_int_attribute(attribute) + 1
         self._db.put(f'meta_{attribute}', index, write_batch=self._write_batch)
 
-    def _get_int_attribute(self, attribute):
+    def _get_int_attribute(self, attribute: str) -> int:
         value = self._db.get(f'meta_{attribute}')
         if value is None:
             return -1
