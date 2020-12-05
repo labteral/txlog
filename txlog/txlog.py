@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from easyrocks import DB, WriteBatch, utils
+from easyrocks import RocksDB, WriteBatch, utils
 import logging
 import time
 import builtins
@@ -96,7 +96,7 @@ class TxLog:
         self._write_batch = None
         self._committed_ttl_seconds = committed_ttl_seconds
         self._max_committed_items = max_committed_items
-        self._db = DB(f'{path}')
+        self._db = RocksDB(f'{path}')
 
     def begin(self):
         if self._write_batch is None:
