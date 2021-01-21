@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 from easyrocks import RocksDB, WriteBatch, utils
-import logging
 import time
 import builtins
 from typing import Generator
