@@ -7,10 +7,6 @@ import time
 import builtins
 from typing import Generator
 
-# TODO RESET INDEX % 1M
-# pensar la comparación del assert cuando se haga el index circular
-# el momento crítico es al volver a empezar
-
 
 def get_timestamp_ms():
     return int(round(time.time() * 1000))
@@ -87,11 +83,7 @@ class Call:
 
 
 class TxLog:
-    def __init__(self,
-                 path='./txlog_data',
-                 committed_ttl_seconds=2592000,
-                 max_committed_items=0):
-        # 30 days = 2592000 seconds
+    def __init__(self, path='./txlog_data', max_committed_items=0, committed_ttl_seconds=None):
         self._batch_index = None
         self._write_batch = None
         self._committed_ttl_seconds = committed_ttl_seconds
@@ -167,31 +159,31 @@ class TxLog:
                 yield self.get(index)
 
     def truncate(self):
-        if self._committed_ttl_seconds:
-            for key, call in self._db.scan(prefix='txlog_'):
-                if not call._committed:
-                    continue
-
-                min_timestamp = get_timestamp_ms() - self._committed_ttl_seconds * 1000
-                if call._creation_timestamp <= min_timestamp:
-                    self._db.delete(key)
-
-        if self._max_committed_items:
+        if self._max_committed_items is not None:
             committed_calls_no = self.count_committed_calls()
             for key, call in self._db.scan(prefix='txlog_'):
-                if committed_calls_no <= self._max_committed_items:
+                if not call.committed:
                     break
 
-                if not call._committed:
+                if committed_calls_no <= self._max_committed_items:
                     break
 
                 self._db.delete(key)
                 committed_calls_no -= 1
 
+        if self._committed_ttl_seconds is not None:
+            for key, call in self._db.scan(prefix='txlog_'):
+                if not call.committed:
+                    break
+
+                min_timestamp = get_timestamp_ms() - self._committed_ttl_seconds * 1000
+                if call._creation_timestamp <= min_timestamp:
+                    self._db.delete(key)
+
     def count_committed_calls(self) -> int:
         counter = 0
         for _, call in self._db.scan(prefix='txlog_'):
-            if call._committed:
+            if call.committed:
                 counter += 1
         return counter
 
@@ -248,10 +240,10 @@ class TxLog:
     def _increment_int_attribute(self, attribute: str):
         if attribute == 'index' and self._write_batch is not None:
             self._batch_index += 1
-            index = self._batch_index
+            value = self._batch_index
         else:
-            index = self._get_int_attribute(attribute) + 1
-        self._db.put(f'meta_{attribute}', index, write_batch=self._write_batch)
+            value = self._get_int_attribute(attribute) + 1
+        self._db.put(f'meta_{attribute}', value, write_batch=self._write_batch)
 
     def _get_int_attribute(self, attribute: str) -> int:
         value = self._db.get(f'meta_{attribute}')
