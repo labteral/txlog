@@ -34,7 +34,11 @@ txlog = TxLog(path=TXLOG_PATH, max_committed_items=3, committed_ttl_seconds=1)
 # Define three calls
 call1 = Call('method_without_params')
 call2 = Call('method_with_one_param', args=['value1'])
-call3 = Call('method_with_two_params', kwargs={'param1': 'value1', 'param2': 'value2'})
+call3 = Call('method_with_two_params',
+             kwargs={
+                 'param1': 'value1',
+                 'param2': 'value2'
+             })
 
 # Add the three calls to the txlog atomically and check their indexes
 txlog.begin()
