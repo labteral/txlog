@@ -1,11 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from .txlog import TxLog, Call
-import logging
+from .txlog import TxLog, Call  # noqa: F401
 
-__version__ = '2.214.0'
-
-logging.getLogger().setLevel(logging.INFO)
-logging.basicConfig(format='%(asctime)-15s [%(levelname)s] %(message)s',
-                    datefmt='%Y-%m-%d %H:%M:%S')
+__version__ = '2.2308.0'
