@@ -5,7 +5,8 @@ from setuptools import find_packages
 from setuptools import setup
 import txlog
 
-setup(name='txlog',
+setup(
+      name='txlog',
       version=txlog.__version__,
       description='Crash-resistant Python code made easy',
       url='https://github.com/labteral/txlog',
@@ -24,4 +25,5 @@ setup(name='txlog',
           "Programming Language :: Python :: Implementation :: PyPy",
           "Topic :: Software Development :: Libraries :: Python Modules",
       ],
-      install_requires=['easyrocks'])
+      install_requires=['easyrocks'],
+)
