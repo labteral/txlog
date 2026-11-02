@@ -1,5 +1,7 @@
-#!/bin/bash
-rm dist/*
-python3 setup.py install
-python3 setup.py bdist_wheel
-twine upload dist/*.whl
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+rm -rf dist build
+python3 -m build
+python3 -m twine check --strict dist/*
+python3 -m twine upload dist/*

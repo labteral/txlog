@@ -3,10 +3,19 @@
 
 from setuptools import find_packages
 from setuptools import setup
-import txlog
+from pathlib import Path
+import re
 
-setup(name='txlog',
-      version=txlog.__version__,
+ROOT = Path(__file__).parent
+VERSION = re.search(r"^__version__ = '([^']+)'",
+                    (ROOT / 'txlog/__init__.py').read_text(), re.M)[1]
+
+setup(
+      name='txlog',
+      version=VERSION,
+      long_description='Crash-resistant Python code made easy.',
+      long_description_content_type='text/plain',
+      python_requires='>=3.10,<4',
       description='Crash-resistant Python code made easy',
       url='https://github.com/labteral/txlog',
       author='Rodrigo Martínez',
@@ -20,8 +29,9 @@ setup(name='txlog',
           "Intended Audience :: Developers",
           "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
           "Operating System :: POSIX :: Linux",
-          "Programming Language :: Python :: 3.6",
-          "Programming Language :: Python :: Implementation :: PyPy",
+          "Programming Language :: Python :: 3.14",
+          "Programming Language :: Python :: Implementation :: CPython",
           "Topic :: Software Development :: Libraries :: Python Modules",
       ],
-      install_requires=['easyrocks'])
+      install_requires=['easyrocks>=4.2610.0,<5'],
+)

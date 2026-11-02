@@ -1,0 +1,7 @@
+.git
+build
+dist
+release
+*.egg-info
+**/__pycache__
+docker/*.tar

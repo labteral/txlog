@@ -4,6 +4,7 @@
 from .utils import get_timestamp_ms
 from easyrocks import RocksDB, WriteBatch, utils
 import builtins
+from threading import RLock
 from typing import Generator
 
 UINT_BYTES = 5
@@ -92,56 +93,102 @@ class TxLog:
                  max_committed_items=0,
                  committed_ttl_seconds=None):
         self._batch_index = None
+        self._batch_offset = None
         self._write_batch = None
+        self._write_lock = RLock()
+        self._execution_lock = RLock()
         self._committed_ttl_seconds = committed_ttl_seconds
         self._max_committed_items = max_committed_items
         self._db = RocksDB(f'{path}')
 
     def begin(self):
-        if self._write_batch is None:
-            self._batch_index = self._get_index()
+        """Own the batch in this thread until commit or rollback."""
+        self._write_lock.acquire()
+        if self._write_batch is not None:
+            self._write_lock.release()
+            return
+        try:
+            self._batch_index = self._get_int_attribute('index')
+            self._batch_offset = self._get_int_attribute('offset')
             self._write_batch = WriteBatch()
+        except BaseException:
+            self._write_lock.release()
+            raise
 
     def commit(self):
-        self._db.commit(self._write_batch)
-        self._write_batch = None
+        with self._write_lock:
+            if self._write_batch is None:
+                raise ValueError('No active transaction')
+            try:
+                self._db.commit(self._write_batch)
+            finally:
+                self._write_batch = None
+                self._batch_index = self._batch_offset = None
+                self._write_lock.release()
 
     def rollback(self):
-        self._write_batch = None
+        with self._write_lock:
+            if self._write_batch is not None:
+                self._write_batch = None
+                self._batch_index = self._batch_offset = None
+                self._write_lock.release()
 
     def commit_call(self, call: Call):
-        is_new_write_batch = self._write_batch is None
-        if is_new_write_batch:
-            self.begin()
-
-        call._committed = True
-        call._commitment_timestamp = get_timestamp_ms()
-        self._update_call(call.index, call)
-        self._increment_offset()
-
-        if is_new_write_batch:
-            self.commit()
+        with self._write_lock:
+            if not isinstance(call, Call) or type(call.index) is not int:
+                raise TypeError('Expected a persisted Call')
+            expected = self._get_next_offset()
+            if call.index < expected:
+                return
+            if call.index != expected or self.get(call.index) is None:
+                raise ValueError('Calls must be committed in order')
+            is_new_write_batch = self._write_batch is None
+            previous = call._committed, call._commitment_timestamp
+            try:
+                if is_new_write_batch:
+                    self.begin()
+                call._committed = True
+                call._commitment_timestamp = get_timestamp_ms()
+                self._update_call(call.index, call)
+                self._increment_offset()
+                if is_new_write_batch:
+                    self.commit()
+            except BaseException:
+                call._committed, call._commitment_timestamp = previous
+                if is_new_write_batch:
+                    self.rollback()
+                raise
 
     def get(self, index: int) -> Call:
-        call_key = self._get_call_key(index)
-        return self._db.get(call_key)
+        with self._write_lock:
+            return self._db.get(self._get_call_key(index))
 
     def exec_uncommitted_calls(self, container_object=None):
-        for call in self.get_uncommitted_calls():
-            call.exec(container_object)
-            self.commit_call(call)
+        with self._write_lock:
+            if self._write_batch is not None:
+                raise RuntimeError('Commit or roll back before replaying calls')
+        with self._execution_lock:
+            for call in self.get_uncommitted_calls():
+                call.exec(container_object)
+                self.commit_call(call)
 
     def add(self, call: Call):
         if not isinstance(call, Call):
             raise TypeError
-        
-        index = self._get_next_index()
-        if index > MAX_UINT:
-            raise ValueError(index)
-        
-        call.set_index(index)
-        self._put_call(index, call)
-        return index
+
+        with self._write_lock:
+            index = self._get_next_index()
+            if index > MAX_UINT:
+                raise ValueError(index)
+            implicit = self._write_batch is None
+            try:
+                call.set_index(index)
+                self._put_call(index, call)
+                return index
+            except BaseException:
+                if implicit:
+                    self.rollback()
+                raise
 
     def print_calls(self):
         for call in self.get_calls():
@@ -152,24 +199,42 @@ class TxLog:
             print(call._method_name, call._args, call._kwargs)
 
     def get_calls(self) -> Generator[Call, None, None]:
-        for _, call in self._db.scan(prefix=self.CALL_PREFIX):
-            yield call
+        with self._write_lock:
+            iterator = self._db.db.iteritems()
+            iterator.seek(self.CALL_PREFIX)
+        for key, value in iterator:
+            if not key.startswith(self.CALL_PREFIX):
+                break
+            yield utils.unpack(value)
 
     def get_first_uncommitted_call(self) -> Call:
-        next_offset = self._get_next_offset()
-        if next_offset > self._get_index():
-            return
-        call_key = self._get_call_key(next_offset)
-        return self._db.get(call_key)
+        with self._write_lock:
+            next_offset = self._get_int_attribute('offset') + 1
+            if next_offset > self._get_int_attribute('index'):
+                return
+            call = self.get(next_offset)
+            if call is None:
+                raise ValueError(f'Missing uncommitted call at index {next_offset}')
+            return call
 
     def get_uncommitted_calls(self) -> Generator[Call, None, None]:
-        first_uncommitted_call = self.get_first_uncommitted_call()
-        if first_uncommitted_call is not None:
-            for index in range(first_uncommitted_call.index,
-                               self._get_next_index()):
-                yield self.get(index)
+        with self._write_lock:
+            first = self._get_int_attribute('offset') + 1
+            end = self._get_int_attribute('index') + 1
+        for index in range(first, end):
+            with self._write_lock:
+                if index < self._get_int_attribute('offset') + 1:
+                    continue
+                call = self.get(index)
+                if call is None:
+                    raise ValueError(f'Missing uncommitted call at index {index}')
+            yield call
 
     def truncate(self):
+        with self._write_lock:
+            self._truncate()
+
+    def _truncate(self):
         if self._max_committed_items is not None:
             committed_calls_no = self.count_committed_calls()
             for key, call in self._db.scan(prefix=self.CALL_PREFIX):
@@ -232,10 +297,9 @@ class TxLog:
     def _increment_offset(self):
         self._increment_int_attribute('offset')
 
-    def _get_offset(self) -> int:
-        return self._get_int_attribute('offset')
-
     def _get_next_offset(self) -> int:
+        if self._write_batch is not None:
+            return self._batch_offset + 1
         return self._get_int_attribute('offset') + 1
 
     def _increment_index(self):
@@ -258,6 +322,9 @@ class TxLog:
         if attribute == 'index' and self._write_batch is not None:
             self._batch_index += 1
             value = self._batch_index
+        elif attribute == 'offset' and self._write_batch is not None:
+            self._batch_offset += 1
+            value = self._batch_offset
         else:
             value = self._get_int_attribute(attribute) + 1
 
